@@ -1,0 +1,170 @@
+- hosts: ubuntu
+  become: yes
+  vars:
+    username: test
+    userpass: zaq1@WSX
+  pre_tasks:
+    - name: Tworzenie uzytkownika
+      user:
+        name: "{{ username }}"
+        state: present
+        shell: /bin/bash
+        password: "{{ userpass | password_hash('sha512') }}"
+        update_password: on_create
+        groups: sudo
+        append: yes
+
+    - name: Uzywanie sudo bez podawania hasla dla "{{ username }}"
+      lineinfile:
+        dest: /etc/sudoers
+        line: '"{{ username }}" ALL=(ALL) NOPASSWD: ALL'
+        validate: 'visudo -cf %s'
+
+    - name: set up authorized keys for the "{{ username }}" user
+      authorized_key: user="{{ username }}" key="{{item}}"
+      with_file:
+        - ~/.ssh/id_rsa.pub
+
+    - name: allow "{{ username }}" to use sudo without needing a password
+      lineinfile:
+        dest: /etc/sudoers
+        line: '"{{ username }}" ALL=(ALL) NOPASSWD: ALL'
+        validate: 'visudo -cf %s'
+
+    - name: Sprawdzanie miejsca na dysku
+      shell: df -h
+      register: check_storage_space_before
+
+    - name: Ilosc pozostalego miejsca na dysku
+      debug:
+        msg: "{{ check_storage_space_before.stdout_lines }}"
+
+    - name: Sprawdzanie nieuzywanych pakietow
+      command: apt-get -y --dry-run autoremove
+      register: apt_autoremove_output
+
+    - name: Lista pakietow do usuniecia
+      debug:
+        msg: "{{ apt_autoremove_output.stdout_lines }}"
+
+    - name: Usuwanie zbędnych pakietow
+      command: apt-get -y autoremove
+      register: apt_autoremove_output
+
+    - name: odswiezenie repozytorium
+      apt:
+       update_cache: yes
+
+    - name: lista paczek do aktualizacji
+      command: apt list --upgradable
+      register: updates
+
+    - debug: var=updates.stdout_lines
+
+    - name: Zniszczenie calej ludzkosci
+      pause:
+        prompt: Potwierdz prosze ze na pewno chcesz usunac cala ludzkosc! Sprawdz wczesniejsze dane zanim potwierdzisz enterem! Enter aby kontynuowac masowa zaglade. Ctrl+c aby przerwać usuwanie ludzkosci.
+      register: confirm_delete
+
+  post_tasks:
+    - name: aktualizacja repozytorium oraz zainstalowanych paczek
+      apt:
+        update_cache: yes
+        upgrade: 'yes'
+
+    - name: weryfikacja miejsca na dysku po aktualizacji
+      shell: df -h
+      register: check_storage_space_after
+
+    - name: miejsce na dysku po aktualizacji
+      debug:
+        msg: "{{ check_storage_space_after.stdout_lines }}"
+
+    - name: install fail2ban
+      apt:
+        name:
+          - fail2ban
+        update_cache: yes
+
+    - name: copy fail2ban configfiles
+      copy:
+        src: configfiles/debian-sshd-default.conf
+        dest: /etc/fail2ban/jail.d/debian-sshd-default.conf
+
+    - name: restart fail2ban
+      systemd:
+        name: fail2ban
+        state: restarted
+        daemon_reload: yes
+
+    - name: Instalacja wymaganych paczek do poprawnego działania
+      apt:
+        name: ['apt-transport-https','ca-certificates', 'curl', 'software-properties-common']
+        state: present
+        update_cache: yes
+      tags:
+        - docker
+
+    - name: Dodanie kluczy GPG z oficjalnego repo dla Dockera
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      tags:
+        - docker
+
+    - name: Weryfikacja klucza GPG z fingerprintem
+      apt_key:
+        id: 0EBFCD88
+        state: present
+      tags:
+        - docker
+
+    - name: Pobranie dockera ze stabilnego repozytorium
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable
+        state: present
+        update_cache: yes
+      tags:
+        - docker
+
+    - name: Instalacja docker-ce
+      apt:
+        name: docker-ce
+        state: present
+        update_cache: yes
+      tags:
+        - docker
+
+    - name: Dodanie usera "{{ username }}"  do grupy "docker"
+      user:
+        name: "{{ username }}"
+        groups: "docker"
+        append: yes
+      tags:
+        - docker
+
+    - name: Instalacja docker-compose z oficjalnego repo na Github
+      get_url:
+        url : https://github.com/docker/compose/releases/download/v2.5.0/docker-compose-linux-x86_64
+        dest: /usr/local/bin/docker-compose
+        mode: 'u+x,g+x'
+
+    - name: Sprawdzam czy serwer wymaga aktualizacji
+      register: reboot_required_file
+      stat: path=/var/run/reboot-required get_md5=no
+
+    - name: Restart
+      pause:
+        prompt: Potwierdz prosze ze na pewno chcesz dokonać automatycznego restartu na maszynach które tego wymagają.
+      register: confirm_delete
+
+    - name: restart jesli kernel byl aktualizowany
+      reboot:
+        msg: "Reboot initiated by Ansible for kernel updates"
+        connect_timeout: 5
+        reboot_timeout: 300
+        pre_reboot_delay: 0
+        post_reboot_delay: 30
+        test_command: uptime
+      when: reboot_required_file.stat.exists
+
