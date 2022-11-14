@@ -1,4 +1,13 @@
 # ansible_playbook_full
+
+urgent - w repo brakuje:
+`~/ansible/playbooks/configfiles/debian-sshd-default.conf`
+``` conf
+[sshd]
+enabled = true
+bantime = 3600
+```
+
 Wstępinie wymagane:
  - wygenerowanie klucza ssh: `ssh-keygen -t rsa -b 4096`
  - instalacja ansible:
